@@ -1,9 +1,11 @@
-import { Component } from '@angular/core';
+import { Component, DestroyRef } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Header } from '../../header/header';
 import { DELIVERY_SIZES, DELIVERY_SPEEDS } from './order.config';
 import { FormGroup, FormBuilder, Validators, ReactiveFormsModule } from '@angular/forms';
 import { signal } from '@angular/core';
 import { UpperCasePipe } from '@angular/common';
+import { DeliveryApi } from '../../services/delivery-api';
 
 declare var ymaps: any;
 
@@ -20,6 +22,7 @@ export class Order {
 
     public map: any;
     private mapRoute: any;
+    private calculationRequestId = 0;
 
     public routeForm: FormGroup;
     public orderForm: FormGroup;
@@ -27,7 +30,7 @@ export class Order {
     public orderId: any = signal(null);
     public calculationResult: any = signal(null);
 
-    constructor(private formBuilder: FormBuilder) {
+    constructor(private formBuilder: FormBuilder, private deliveryApi: DeliveryApi, private destroyRef: DestroyRef) {
         this.routeForm = this.formBuilder.group({
             from: ['', Validators.required],
             to: ['', Validators.required],
@@ -39,6 +42,10 @@ export class Order {
             phone: ['', [Validators.required]],
             comment: ['']
         });
+
+        this.routeForm.valueChanges
+            .pipe(takeUntilDestroyed(this.destroyRef))
+            .subscribe(() => this.resetCalculation());
     }
 
     ngOnInit() {
@@ -65,6 +72,7 @@ public selectSpeed(speed: string) {
 
 public calculate() {
         this.calculationResult.set(null);
+        const calculationRequestId = ++this.calculationRequestId;
 
         if (!this.map || this.routeForm.invalid) {
             return;
@@ -84,6 +92,10 @@ public calculate() {
         this.map.geoObjects.add(this.mapRoute);
 
         this.mapRoute.model.events.add('requestsuccess', () => {
+            if (calculationRequestId !== this.calculationRequestId) {
+                return;
+            }
+
             try {
                 const activeRoute = this.mapRoute.getActiveRoute();
                 if (!activeRoute) {
@@ -119,7 +131,21 @@ public calculate() {
             }
         });
 
-        this.mapRoute.model.events.add('requestfail', () => this.failedCalculation());
+        this.mapRoute.model.events.add('requestfail', () => {
+            if (calculationRequestId === this.calculationRequestId) {
+                this.failedCalculation();
+            }
+        });
+    }
+
+    private resetCalculation() {
+        this.calculationRequestId++;
+        this.calculationResult.set(null);
+
+        if (this.map && this.mapRoute) {
+            this.map.geoObjects.remove(this.mapRoute);
+            this.mapRoute = null;
+        }
     }
 
     private failedCalculation() {
@@ -150,7 +176,13 @@ public submitOrder() {
             createdAt: new Date().toISOString()
         };
 
-        console.log(payload);
-        this.orderId.set(1);
+        this.deliveryApi.createDelivery(payload).subscribe((response) => {
+    if ('error' in response) {
+        alert(response.error);
+        return;
+    }
+
+    this.orderId.set(response.id);
+});
     }
 }
